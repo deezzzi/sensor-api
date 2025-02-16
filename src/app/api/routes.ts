@@ -1,6 +1,6 @@
 "use server";
 
-// Types
+// Types for sensor data structure
 interface SensorData {
   sandLevel: number;
   samplingRate: number;
@@ -8,7 +8,7 @@ interface SensorData {
   timestamp: number;
 }
 
-// In-memory storage for sensor data
+// In-memory storage for latest sensor data
 let latestSensorData: SensorData = {
   sandLevel: 0,
   samplingRate: 1,
@@ -16,18 +16,50 @@ let latestSensorData: SensorData = {
   timestamp: Date.now(),
 };
 
-// GET handler returns the last received sensor data
+// GET endpoint - Frontend fetches this
 export async function GET() {
   try {
-    // For testing/development, generate random data
-    const data: SensorData = {
-      sandLevel: Math.floor(Math.random() * 1000),
-      samplingRate: 1,
-      sampleInterval: 1000,
+    // Fetch from hardware
+    const hardwareUrl = process.env.HARDWARE_IP || 'http://192.168.0.106';
+    console.log('Fetching from hardware:', hardwareUrl);
+
+    const response = await fetch(hardwareUrl, {
+      headers: {
+        'Accept': 'application/json',
+      },
+      next: { revalidate: 0 }, // Disable cache
+    });
+
+    if (!response.ok) {
+      throw new Error(`Hardware fetch failed: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    console.log('Received from hardware:', data);
+
+    // Update stored data
+    latestSensorData = {
+      sandLevel: Number(data.sandLevel),
+      samplingRate: Number(data.samplingRate) || 1,
+      sampleInterval: Number(data.sampleInterval) || 1000,
       timestamp: Date.now(),
     };
 
-    return new Response(JSON.stringify(data), {
+    return new Response(JSON.stringify(latestSensorData), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching from hardware:', error);
+    // Return last known data if hardware fetch fails
+    return new Response(JSON.stringify({
+      ...latestSensorData,
+      error: 'Hardware connection failed, showing last known data'
+    }), {
       status: 200,
       headers: {
         "Content-Type": "application/json",
@@ -35,26 +67,25 @@ export async function GET() {
         "Cache-Control": "no-store",
       },
     });
-  } catch (error) {
-    console.error('GET Error:', error);
-    return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
-      status: 500,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
   }
 }
 
-// POST handler receives data from the Arduino/sensor
+// POST endpoint - Optional, if hardware needs to push data
 export async function POST(request: Request) {
   try {
     const data = await request.json();
     
     // Validate incoming data
     if (typeof data.sandLevel !== 'number') {
-      throw new Error("Invalid data format: sandLevel must be a number");
+      return new Response(JSON.stringify({ 
+        error: 'Invalid data format: sandLevel must be a number' 
+      }), {
+        status: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
     }
 
     // Update stored data
@@ -66,7 +97,7 @@ export async function POST(request: Request) {
     };
 
     return new Response(JSON.stringify({ 
-      message: "Data updated successfully",
+      success: true,
       data: latestSensorData 
     }), {
       status: 200,
@@ -78,8 +109,9 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error('POST Error:', error);
     return new Response(JSON.stringify({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    }), {
+      error: 'Failed to process data',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }), { 
       status: 500,
       headers: {
         "Content-Type": "application/json",
@@ -89,7 +121,7 @@ export async function POST(request: Request) {
   }
 }
 
-// OPTIONS handler for CORS preflight requests
+// OPTIONS endpoint - Handle CORS preflight requests
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
@@ -97,6 +129,7 @@ export async function OPTIONS() {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Max-Age": "86400",
     },
   });
-}
+} 
